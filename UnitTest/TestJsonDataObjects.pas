@@ -1,5 +1,13 @@
 unit TestJsonDataObjects;
 
+{$IFDEF NEXTGEN}
+  {$IF CompilerVersion >= 31.0} // 10.1 Berlin or newer
+    {$DEFINE SUPPORTS_UTF8STRING} // Delphi 10.1 Berlin supports UTF8String for mobile compilers
+  {$IFEND}
+{$ELSE}
+  {$DEFINE SUPPORTS_UTF8STRING}
+{$ENDIF}
+
 interface
 
 uses
@@ -9,6 +17,7 @@ uses
 type
   TestTJsonBaseObject = class(TTestCase)
   private
+    FProgressSteps: array of NativeInt;
     procedure LoadFromEmptyStream;
     procedure LoadFromArrayStreamIntoObject;
     procedure ParseUtf8BrokenJSON1;
@@ -28,6 +37,8 @@ type
     procedure ObjectToVariantException;
     procedure ArrayToVariantException;
     procedure UnassigendVariantException;
+    procedure NoNullConvertToValueTypesException;
+    procedure NullObjectToArrayException;
   public
     procedure SetUp; override;
     procedure TearDown; override;
@@ -49,9 +60,15 @@ type
     procedure TestToString;
     procedure TestDateTimeToJSON;
     procedure TestEmptyString;
+    {$IFDEF SUPPORTS_UTF8STRING}
     procedure TestToUTF8JSON;
+    {$ENDIF SUPPORTS_UTF8STRING}
     procedure TestInt64MaxIntX2;
     procedure TestVariant;
+    procedure TestVariantNull;
+    procedure TestUInt64;
+    procedure TestProgress;
+    procedure TestSyntaxErrors;
   end;
 
   TestTJsonArray = class(TTestCase)
@@ -91,12 +108,18 @@ type
     procedure TestObjectAssign;
     procedure TestToSimpleObject;
     procedure TestFromSimpleObject;
+    procedure TestFromSimpleObjectLowerCamelCase;
     procedure TestPathAccess;
     procedure TestExtract;
     procedure TestEnumerator;
   end;
 
 implementation
+
+function CompareFloatRel(Expected, Actual: Extended; RelativeError: Extended = 0.0000001): Boolean;
+begin
+  Result := (Expected = Actual) or (Abs((Actual - Expected) / Expected) < RelativeError);
+end;
 
 { TestTJsonBaseObject }
 
@@ -1155,38 +1178,38 @@ begin
   ExpectDt := EncodeDate(2015, 2, 14);
     S := TJsonBaseObject.DateTimeToJSON(ExpectDt, True);
     Dt := TJsonBaseObject.JSONToDateTime(S);
-    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', retured: ' + DateTimeToStr(Dt));
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', returned: ' + DateTimeToStr(Dt));
 
     S := TJsonBaseObject.DateTimeToJSON(ExpectDt, False);
     Dt := TJsonBaseObject.JSONToDateTime(S);
-    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', retured: ' + DateTimeToStr(Dt));
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', returned: ' + DateTimeToStr(Dt));
 
   ExpectDt := EncodeDate(2000, 2, 29);
     S := TJsonBaseObject.DateTimeToJSON(ExpectDt, False);
     Dt := TJsonBaseObject.JSONToDateTime(S);
-    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', retured: ' + DateTimeToStr(Dt));
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', returned: ' + DateTimeToStr(Dt));
 
     S := TJsonBaseObject.DateTimeToJSON(ExpectDt, True);
     Dt := TJsonBaseObject.JSONToDateTime(S);
-    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', retured: ' + DateTimeToStr(Dt));
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', returned: ' + DateTimeToStr(Dt));
 
   ExpectDt := EncodeDate(2000, 2, 29) + EncodeTime(1, 2, 3, 4);
     S := TJsonBaseObject.DateTimeToJSON(ExpectDt, False);
     Dt := TJsonBaseObject.JSONToDateTime(S);
-    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', retured: ' + DateTimeToStr(Dt));
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', returned: ' + DateTimeToStr(Dt));
 
     S := TJsonBaseObject.DateTimeToJSON(ExpectDt, True);
     Dt := TJsonBaseObject.JSONToDateTime(S);
-    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', retured: ' + DateTimeToStr(Dt));
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', returned: ' + DateTimeToStr(Dt));
 
   ExpectDt := EncodeDate(2014, 1, 1) + EncodeTime(5, 4, 2, 1);
     S := TJsonBaseObject.DateTimeToJSON(ExpectDt, False);
     Dt := TJsonBaseObject.JSONToDateTime(S);
-    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', retured: ' + DateTimeToStr(Dt));
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', returned: ' + DateTimeToStr(Dt));
 
     S := TJsonBaseObject.DateTimeToJSON(ExpectDt, True);
     Dt := TJsonBaseObject.JSONToDateTime(S);
-    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', retured: ' + DateTimeToStr(Dt));
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + DateTimeToStr(ExpectDt) + ', returned: ' + DateTimeToStr(Dt));
 
   TJsonBaseObject.JSONToDateTime('2009-01-01T12:00:00+01:00');
   TJsonBaseObject.JSONToDateTime('2009-01-01T12:00:00+0100');
@@ -1207,6 +1230,7 @@ begin
   end;
 end;
 
+{$IFDEF SUPPORTS_UTF8STRING}
 procedure TestTJsonBaseObject.TestToUTF8JSON;
 var
   B: TJsonBaseObject;
@@ -1287,6 +1311,7 @@ begin
     B.Free;
   end;
 end;
+{$ENDIF SUPPORTS_UTF8STRING}
 
 procedure TestTJsonBaseObject.TestInt64MaxIntX2;
 var
@@ -1366,10 +1391,14 @@ begin
   try
     O := B as TJsonObject;
 
+    // did this here because right now we can't auto parse datetime values
+    O.D['DateTime'] := TJsonBaseObject.JSONToDateTime('2014-12-31T23:59:59.999Z');
+
     Check(O['Key'].VariantValue = 123, 'Int to Variant');
     Check(O['Bool'].VariantValue = True, 'Boolean to Variant');
     Check(O['Null'].VariantValue = Null, 'null to Variant');
-    Check(CompareFloatRelative(O['Float'].VariantValue, -1.234567890E10), 'Float to Variant');
+    Check(CompareFloatRel(O['Float'].VariantValue, -1.234567890E10), 'Float to Variant');
+    Check(CompareFloatRel(O['DateTime'].VariantValue, TJsonBaseObject.JSONToDateTime('2014-12-31T23:59:59.999Z')), 'DateTime to Variant');
     Check(O['Int64'].VariantValue = 1234567890123456789, 'Int64 to Variant');
 
     CheckException(ObjectToVariantException, EJsonCastException, 'Object to Variant exception');
@@ -1394,7 +1423,12 @@ begin
     V := -1.2;
     O['Key'] := V;
     Check(O['Key'].Typ = jdtFloat);
-    Check(CompareFloatRelative(-1.2, O['Key']), 'Variant to Float');
+    Check(CompareFloatRel(-1.2, O['Key']), 'Variant to Float');
+
+    V := TJsonBaseObject.JSONToDateTime('2014-12-31T23:59:59.999Z');
+    O['Key'] := V;
+    Check(O['Key'].Typ = jdtDateTime);
+    Check(CompareFloatRel(TJsonBaseObject.JSONToDateTime('2014-12-31T23:59:59.999Z'), O['Key']), 'Variant to DateTime');
 
     V := True;
     O['Key'] := V;
@@ -1412,6 +1446,208 @@ begin
 
   finally
     B.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.NoNullConvertToValueTypesException;
+var
+  O: TJsonObject;
+begin
+  JsonSerializationConfig.NullConvertsToValueTypes := False;
+  O := TJsonObject.Create;
+  try
+    O['Null'] := Null;
+    O.S['Null'];
+  finally
+    O.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.NullObjectToArrayException;
+var
+  O: TJsonObject;
+begin
+  O := TJsonObject.Create;
+  try
+    O['Null'] := Null;
+
+    JsonSerializationConfig.NullConvertsToValueTypes := True;
+    O.A['Null'];
+    JsonSerializationConfig.NullConvertsToValueTypes := False;
+    O.A['Null'];
+  finally
+    O.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.TestVariantNull;
+var
+  O: TJsonObject;
+  DefaultValue: Boolean;
+begin
+  DefaultValue := JsonSerializationConfig.NullConvertsToValueTypes;
+  try
+    CheckFalse(JsonSerializationConfig.NullConvertsToValueTypes, 'NullConvertsToValueTypes default is not False');
+
+    CheckException(NoNullConvertToValueTypesException, EJsonCastException, 'Null to value types');
+
+    O := TJsonObject.Create;
+    try
+      O['Null'] := Null;
+
+      JsonSerializationConfig.NullConvertsToValueTypes := True;
+      CheckEqualsString('', O.S['Null']);
+      CheckEquals(0, O.I['Null']);
+      CheckEquals(0, O.L['Null']);
+      CheckEquals(0.0, O.F['Null']);
+      CheckEquals(0.0, O.F['Null']);
+      CheckEquals(False, O.B['Null']);
+      CheckSame(nil, O.O['Null']);
+
+      CheckException(NullObjectToArrayException, EJsonCastException, 'Null object to array');
+    finally
+      O.Free;
+    end;
+  finally
+    JsonSerializationConfig.NullConvertsToValueTypes := DefaultValue;
+  end;
+end;
+
+procedure TestTJsonBaseObject.TestUInt64;
+var
+  S1, S2: string;
+  Json: TJsonObject;
+begin
+  S1 := '{"long_val":15744383709429629494,"long_str":"15744383709429629494"}';
+  Json := TJsonObject.Parse(S1) as TJsonObject;
+  try
+    S2 := Json.ToJSON;
+    CheckEquals(S1, S2, 'UInt64 mismatch');
+  finally
+    Json.Free;
+  end;
+end;
+
+procedure JsonProgress(Data: Pointer; Percentage: Integer; Position, Size: NativeInt);
+var
+  Test: TestTJsonBaseObject;
+  Index: Integer;
+begin
+  Test := TestTJsonBaseObject(Data);
+  Index := Length(Test.FProgressSteps);
+  SetLength(Test.FProgressSteps, Index + 1);
+  Test.FProgressSteps[Index] := Position;
+end;
+
+procedure TestTJsonBaseObject.TestProgress;
+const
+  S = '{"fieldname":"abcdefghijklmnopqrstuvwxyz","next":{"test":"test", "data":1234}}';
+var
+  Json: TJsonObject;
+  Progress: TJsonReaderProgressRec;
+  I: Integer;
+  LargeJson: {$IFDEF SUPPORTS_UTF8STRING}UTF8String{$ELSE}TBytes{$ENDIF};
+begin
+  // Call Progress if byte position changed
+  FProgressSteps := nil;
+  {$IFDEF SUPPORTS_UTF8STRING}
+  Json := TJDOJsonArray.ParseUtf8(S, Progress.Init(JsonProgress, Self, 1)) as TJsonObject;
+  {$ELSE}
+  Json := TJDOJsonArray.Parse(S, Progress.Init(JsonProgress, Self, 1)) as TJsonObject;
+  {$ENDIF SUPPORTS_UTF8STRING}
+  try
+    CheckTrue(Length(FProgressSteps) > 2);
+
+    CheckEquals(0, FProgressSteps[0]);
+    CheckEquals(Length(S) * SizeOf(Byte), FProgressSteps[Length(FProgressSteps) - 1]);
+
+    // values must be monotonically increasing
+    I := 1;
+    while I < Length(FProgressSteps) do
+    begin
+      CheckTrue(FProgressSteps[I - 1] < FProgressSteps[I], 'monotonically increasing');
+      Inc(I);
+    end;
+
+    for I := 0 to 100000 do
+      Json.A['MyArray'].Add('Index: ' + IntToStr(I));
+    {$IFDEF SUPPORTS_UTF8STRING}
+    LargeJson := Json.ToUtf8JSON();
+    {$ELSE}
+    Json.ToUtf8JSON(LargeJson);
+    {$ENDIF SUPPORTS_UTF8STRING}
+  finally
+    Json.Free;
+  end;
+
+  // Call Progress only if percentage changed
+  FProgressSteps := nil;
+  {$IFDEF SUPPORTS_UTF8STRING}
+  Json := TJDOJsonArray.ParseUtf8(LargeJson, Progress.Init(JsonProgress, Self)) as TJsonObject;
+  {$ELSE}
+  Json := TJDOJsonArray.Parse(LargeJson, TEncoding.UTF8, 0, -1, Progress.Init(JsonProgress, Self)) as TJsonObject;
+  {$ENDIF SUPPORTS_UTF8STRING}
+  try
+    CheckTrue(Length(FProgressSteps) > 2);
+    CheckEquals(100 + 1, Length(FProgressSteps)); // 0, 1, 2, ..., 99, 100
+
+    CheckEquals(0, FProgressSteps[0]);
+    CheckEquals(Length(LargeJson) * SizeOf(Byte), FProgressSteps[Length(FProgressSteps) - 1]);
+
+    // values must be monotonically increasing
+    I := 1;
+    while I < Length(FProgressSteps) do
+    begin
+      CheckTrue(FProgressSteps[I - 1] < FProgressSteps[I], 'monotonically increasing');
+      Inc(I);
+    end;
+  finally
+    Json.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.TestSyntaxErrors;
+begin
+  try
+    TJsonBaseObject.ParseUtf8('{ "abc": '#13#10'"val'#10'ue", . }').Free;
+    CheckTrue(False, 'EJsonParserSyntaxException was not raised');
+  except
+    on E: EJsonParserException do
+    begin
+      CheckEquals(2, E.LineNum, 'LineNum');
+      CheckEquals(5, E.Column, 'Column');
+      CheckEquals(15, E.Position, 'Position');
+    end
+    else
+      CheckTrue(False, 'EJsonParserSyntaxException was not raised');
+  end;
+
+  try
+    TJsonBaseObject.ParseUtf8('{ "abc": '#13#10'"value');
+    CheckTrue(False, 'EJsonParserSyntaxException was not raised');
+  except
+    on E: EJsonParserException do
+    begin
+      CheckEquals(2, E.LineNum, 'LineNum');
+      CheckEquals(1, E.Column, 'Column');
+      CheckEquals(11, E.Position, 'Position');
+    end
+    else
+      CheckTrue(False, 'EJsonParserSyntaxException was not raised');
+  end;
+
+  try
+    TJsonBaseObject.ParseUtf8('{ "abc": '#13#10'"value", . }').Free;
+    CheckTrue(False, 'EJsonParserSyntaxException was not raised');
+  except
+    on E: EJsonParserException do
+    begin
+      CheckEquals(2, E.LineNum, 'LineNum');
+      CheckEquals(11, E.Column, 'Column');
+      CheckEquals(21, E.Position, 'Position');
+    end
+    else
+      CheckTrue(False, 'EJsonParserSyntaxException was not raised');
   end;
 end;
 
@@ -1519,35 +1755,45 @@ begin
     Check(A.Types[12] = jdtFloat, 'jdtFloat');
     CheckEquals(1.12E5, A.F[12]);
 
-    A.Add(False);
+    A.Add(TJsonBaseObject.JSONToDateTime('2014-12-31T23:59:59.999Z'));
     CheckEquals(14, A.Count);
-    Check(A.Types[13] = jdtBool, 'jdtBool');
-    CheckEquals(False, A.B[13]);
+    Check(A.Types[13] = jdtDateTime, 'jdtDateTime');
+    CheckEquals(TJsonBaseObject.JSONToDateTime('2014-12-31T23:59:59.999Z'), A.F[13]);
+
+    A.Add(False);
+    CheckEquals(15, A.Count);
+    Check(A.Types[14] = jdtBool, 'jdtBool');
+    CheckEquals(False, A.B[14]);
 
     A.Add(TJsonObject(nil));
-    CheckEquals(15, A.Count);
-    Check(A.Types[14] = jdtObject, 'jdtObject');
-    CheckNull(A.O[14]);
+    CheckEquals(16, A.Count);
+    Check(A.Types[15] = jdtObject, 'jdtObject');
+    CheckNull(A.O[15]);
 
     A.Add(TJsonArray.Create);
-    CheckEquals(16, A.Count);
-    Check(A.Types[15] = jdtArray, 'jdtArray');
-    CheckNotNull(A.A[15]);
+    CheckEquals(17, A.Count);
+    Check(A.Types[16] = jdtArray, 'jdtArray');
+    CheckNotNull(A.A[16]);
 
     A.AddObject;
-    CheckEquals(17, A.Count);
-    Check(A.Types[16] = jdtObject, 'jdtObject');
-    CheckNotNull(A.O[16]);
+    CheckEquals(18, A.Count);
+    Check(A.Types[17] = jdtObject, 'jdtObject');
+    CheckNotNull(A.O[17]);
 
     A.AddArray;
-    CheckEquals(18, A.Count);
-    Check(A.Types[17] = jdtArray, 'jdtArray');
-    CheckNotNull(A.A[17]);
+    CheckEquals(19, A.Count);
+    Check(A.Types[18] = jdtArray, 'jdtArray');
+    CheckNotNull(A.A[18]);
 
     A.AddObject(nil);
-    CheckEquals(19, A.Count);
-    Check(A.Types[18] = jdtObject, 'jdtObject');
-    CheckNull(A.O[18]);
+    CheckEquals(20, A.Count);
+    Check(A.Types[19] = jdtObject, 'jdtObject');
+    CheckNull(A.O[19]);
+
+    A.Add(12345678901234567890);
+    CheckEquals(21, A.Count);
+    Check(A.Types[20] = jdtULong, 'jdtULong');
+    CheckEquals(12345678901234567890, A.U[20]);
   finally
     A.Free;
   end;
@@ -1574,7 +1820,17 @@ begin
     CheckEquals(5, A.Count);
     CheckEqualsString('ZZZ', A.S[4]);
 
-    CheckEquals('["AAA",1,"Key",2,"ZZZ"]', A.ToJSON);
+    A.Insert(0, 12345678901234567890);
+    CheckEquals(6, A.Count);
+    Check(A.Types[0] = jdtULong, 'jdtULong');
+    CheckEquals(12345678901234567890, A.U[0]);
+
+    A.Insert(0, -1234567890123456789);
+    CheckEquals(7, A.Count);
+    Check(A.Types[0] = jdtLong, 'jdtLong');
+    CheckEquals(-1234567890123456789, A.L[0]);
+
+    CheckEquals('[-1234567890123456789,12345678901234567890,"AAA",1,"Key",2,"ZZZ"]', A.ToJSON);
   finally
     A.Free;
   end;
@@ -1613,11 +1869,6 @@ begin
 end;
 
 procedure TestTJsonArray.TestEnumerator;
-const
-  //TODO DRY: extract DataTypeNames from TJsonDataValue.TypeCastError
-  DataTypeNames: array[TJsonDataType] of string = (
-    'null', 'String', 'Integer', 'Long', 'Float', 'Bool', 'Array', 'Object'
-  );
 var
   A: TJsonArray;
   Value: TJsonDataValueHelper;
@@ -1629,7 +1880,10 @@ begin
     for Typ in [Low(TJsonDataType)..High(TJsonDataType)] do
       FoundTypes[Typ] := False;
 
-    A.FromJSON('[ 42, { "Key": "Value" }, true, null, 1234567890123456789, 1.12, "String", [ 1, 2, 3 ] ]');
+    A.FromJSON('[ 42, { "Key": "Value" }, true, null, 1234567890123456789, 12345678901234567890, 1.12, "String", [ 1, 2, 3 ] ]');
+
+    // did this here because right now we can't auto parse datetime values
+    A.Add(TJsonBaseObject.JSONToDateTime('2014-12-31T23:59:59.999Z'));
 
     for Value in A do
     begin
@@ -1643,7 +1897,9 @@ begin
         jdtString:  CheckEquals('String', Value, 'String value');
         jdtInt:     CheckEquals(42, Value, 'Int value');
         jdtLong:    CheckEquals(1234567890123456789, Value, 'Long value');
+        jdtULong:   CheckEquals(12345678901234567890, Value.ULongValue, 'ULong value');
         jdtFloat:   CheckEquals(1.12, Value, 0.001, 'Float value');
+        jdtDateTime:CheckEquals(TJsonBaseObject.JSONToDateTime('2014-12-31T23:59:59.999Z'), TDateTime(Value), 0.001, 'DateTime value');        // may be we need to add extended vartype overload?
         jdtBool:    CheckEquals(True, Value, 'Boolean value');
         jdtArray:   CheckEquals(3, Value.Count, 'Array count');
         jdtObject:  CheckEquals('Value', Value.S['Key'], 'Object value');
@@ -1651,7 +1907,7 @@ begin
     end;
 
     for Typ in [Low(TJsonDataType)..High(TJsonDataType)] do
-      CheckTrue(FoundTypes[Typ], DataTypeNames[Typ]);
+      CheckTrue(FoundTypes[Typ], TJsonBaseObject.DataTypeNames[Typ]);
   finally
     A.Free;
   end;
@@ -1787,7 +2043,14 @@ end;
 procedure TestTJsonObject.TestAccess;
 var
   O: TJsonObject;
+  dt: TDateTime;
+  JsonUtcTime: string;
 begin
+  dt := EncodeDate(2015, 12, 31) + EncodeTime(23, 59, 59, 999);
+  JsonUtcTime := TJsonBaseObject.DateTimeToJSON(dt, True); // make the unit test region independent
+
+  CheckTrue(JsonSerializationConfig.UseUtcTime);
+
   O := TJsonObject.Create;
   try
     CheckEquals(0, O.Count);
@@ -1800,17 +2063,19 @@ begin
     O.O['MyObject'].I['Int'] := -123;
     O.O['MyObject'].L['Int64'] := -1234567890123456789;
     O.O['MyObject'].F['Float'] := -12.3456789;
+    O.O['MyObject'].D['DateTime'] := dt;
     O.O['MyObject'].B['Bool'] := True;
     O.O['MyObject'].O['Null'] := nil;
     O.A['MyArray'].Add('Hello');
 
-    CheckEquals('{"Key":"Value","MyObject":{"Str":"World","Int":-123,"Int64":-1234567890123456789,"Float":-12.3456789,"Bool":true,"Null":null},"MyArray":["Hello"]}', O.ToJSON);
+    CheckEquals('{"Key":"Value","MyObject":{"Str":"World","Int":-123,"Int64":-1234567890123456789,"Float":-12.3456789,"DateTime":"' + JsonUtcTime + '","Bool":true,"Null":null},"MyArray":["Hello"]}', O.ToJSON);
 
     CheckEqualsString('Value', O.S['Key']);
     CheckEqualsString('World', O.O['MyObject'].S['Str']);
     CheckEquals(-123, O.O['MyObject'].I['Int']);
     CheckEquals(-1234567890123456789, O.O['MyObject'].L['Int64']);
     CheckEquals(-12.3456789, O.O['MyObject'].F['Float'], 0.0000000001);
+    CheckEquals(dt, O.O['MyObject'].F['DateTime'], 0.0000000001);
     CheckEquals(True, O.O['MyObject'].B['Bool']);
     CheckNull(O.O['MyObject'].O['Null']);
     CheckEquals('Hello', O.A['MyArray'].S[0]);
@@ -1948,8 +2213,9 @@ type
     FMyDouble: Double;
     FMyBool: Boolean;
     FMyDateTime: TDateTime;
+    FMyExtraDateTime: TDateTime;
     FMyVariant: Variant;
-    FNonStored: string;
+    FNotStored: string;
   published
     property MyString: string read FMyString write FMyString;
     property MyInt: Integer read FMyInt write FMyInt;
@@ -1957,8 +2223,9 @@ type
     property MyDouble: Double read FMyDouble write FMyDouble;
     property MyBool: Boolean read FMyBool write FMyBool;
     property MyDateTime: TDateTime read FMyDateTime write FMyDateTime;
+    property MyExtraDateTime: TDateTime read FMyExtraDateTime write FMyExtraDateTime;
     property MyVariant: Variant read FMyVariant write FMyVariant;
-    property NonStored: string read FNonStored write FNonStored stored False;
+    property NotStored: string read FNotStored write FNotStored stored False;
   end;
 
 procedure TestTJsonObject.TestToSimpleObject;
@@ -1978,12 +2245,13 @@ begin
     O['MyDouble'] := 3.14159265359;
     O['MyBool'] := True;
     O['MyDateTime'] := TJsonBaseObject.DateTimeToJSON(dt, True);
+    O['MyExtraDateTime'] := dt;
     O['MyVariant'] := 'Variant String';
-    O['NonStored'] := 'xxxxxx';
+    O['NotStored'] := 'xxxxxx';
 
     Obj := TMyObject.Create;
     try
-      Obj.NonStored := 'aaa';
+      Obj.NotStored := 'aaa';
       O.ToSimpleObject(Obj);
       CheckEqualsString('Hello World!', Obj.MyString);
       CheckEquals(135711, Obj.MyInt);
@@ -1991,8 +2259,9 @@ begin
       CheckEquals(3.14159265359, Obj.MyDouble, 0.000000000001);
       CheckEquals(True, Obj.MyBool);
       CheckEquals(dt, Obj.MyDateTime);
+      CheckEquals(dt, Obj.MyExtraDateTime);
       Check(Obj.MyVariant = 'Variant String', 'Obj.MyVariant = ''Variant String''');
-      CheckEquals('aaa', Obj.NonStored);
+      CheckEquals('aaa', Obj.NotStored);
 
       O['MyVariant'] := 123;
       O.ToSimpleObject(Obj);
@@ -2013,12 +2282,13 @@ begin
     O['mydouble'] := 3.14159265359;
     O['mybool'] := True;
     O['mydatetime'] := TJsonBaseObject.DateTimeToJSON(dt, True);
+    O['myextradatetime'] := dt;
     O['myvariant'] := 'Variant String';
-    O['nonstored'] := 'xxxxxx';
+    O['NotStored'] := 'xxxxxx';
 
     Obj := TMyObject.Create;
     try
-      Obj.NonStored := 'aaa';
+      Obj.NotStored := 'aaa';
       O.ToSimpleObject(Obj, False);
       CheckEqualsString('Hello World!', Obj.MyString);
       CheckEquals(135711, Obj.MyInt);
@@ -2026,8 +2296,9 @@ begin
       CheckEquals(3.14159265359, Obj.MyDouble, 0.000000000001);
       CheckEquals(True, Obj.MyBool);
       CheckEquals(dt, Obj.MyDateTime);
+      CheckEquals(dt, Obj.MyExtraDateTime);
       Check(Obj.MyVariant = 'Variant String', 'Obj.MyVariant = ''Variant String''');
-      CheckEquals('aaa', Obj.NonStored);
+      CheckEquals('aaa', Obj.NotStored);
     finally
       Obj.Free;
     end;
@@ -2056,20 +2327,73 @@ begin
       Obj.MyDouble := 3.14159265359;
       Obj.MyBool := False;
       Obj.MyDateTime := dt;
+      Obj.MyExtraDateTime := dt;
       Obj.MyVariant := 12.2;
-      Obj.NonStored := 'abc';
+      Obj.NotStored := 'abc';
 
       O.FromSimpleObject(Obj);
-      CheckEquals(7, O.Count);
+      CheckEquals(8, O.Count);
 
       CheckEqualsString('Hello World!', O.S['MyString']);
       CheckEquals(135711, O.I['MyInt']);
       CheckEquals(135711131719232931, O.L['MyInt64']);
       CheckEquals(3.14159265359, O.F['MyDouble'], 0.000000000001);
       CheckEquals(False, O.B['MyBool']);
-      CheckEquals(TJsonBaseObject.DateTimeToJSON(dt, True), O.S['MyDateTime']);
+      CheckEquals(dt, O.D['MyDateTime']);
+      CheckEquals(dt, O.D['MyExtraDateTime']);
       CheckEquals('12.2', O.S['MyVariant']);
-      CheckFalse(O.Contains('NonStored'), 'Contains(''NonStrored''');
+      CheckFalse(O.Contains('NotStored'), 'Contains(''NonStrored''');
+    finally
+      Obj.Free;
+    end;
+  finally
+    O.Free;
+  end;
+end;
+
+type
+  TMyLowerCamelCaseObject = class(TPersistent)
+  private
+    FLowerCase: string;
+    FAenderung: string;
+    FNoCase: Boolean;
+  published
+    property _NoCase: Boolean read FNoCase write FNoCase;
+    property LowerCase: string read FLowerCase write FLowerCase;
+    {$IFDEF UNICODE} // Delphi 2005+ compilers allow unicode identifiers, even if that is a very bad idea
+    property Änderung: string read FAenderung write FAenderung;
+    {$ENDIF UNICODE}
+  end;
+
+procedure TestTJsonObject.TestFromSimpleObjectLowerCamelCase;
+var
+  O: TJsonObject;
+  Obj: TMyLowerCamelCaseObject;
+begin
+  O := TJsonObject.Create;
+  try
+
+    Obj := TMyLowerCamelCaseObject.Create;
+    try
+      Obj._NoCase := True;
+      Obj.LowerCase := 'LowerCase';
+      {$IFDEF UNICODE} // Delphi 2005+ compilers allow unicode identifiers, even if that is a very bad idea
+      Obj.Änderung := 'Änderung';
+      {$ENDIF UNICODE}
+
+      O.FromSimpleObject(Obj, True);
+
+      {$IFDEF UNICODE}
+      CheckEquals(3, O.Count);
+      {$ELSE}
+      CheckEquals(2, O.Count);
+      {$ENDIF UNICODE}
+
+      CheckEqualsString('_NoCase', O.Names[0]);
+      CheckEqualsString('lowerCase', O.Names[1]);
+      {$IFDEF UNICODE}
+      CheckEqualsString('änderung', O.Names[2]);
+      {$ENDIF UNICODE}
     finally
       Obj.Free;
     end;
@@ -2151,6 +2475,20 @@ begin
     Json.Path['ferrmsg'] := 'Test';
     CheckEquals('{"ferrcod":2,"ferrmsg":"Test"}', Json.ToJSON(True));
 
+    Json.FromJSON(' { "First" : [ { "Second": { "Third": { Value: "Hello World!" } } }, { "Fourth": "Nothing to see" }, "String" ] }');
+    CheckEqualsString('Hello World!', Json.Path['First'].Items[0].Path['Second.Third.Value']);
+    CheckEqualsString('Nothing to see', Json.Path['First[1].Fourth']);
+    Check(Json.Path['First'].Typ = jdtArray);
+    Check(Json.Path['First[0]'].Typ = jdtObject);
+    Check(Json.Path['First[0].Second'].Typ = jdtObject);
+    Check(Json.Path['First[0].Second.Third'].Typ = jdtObject);
+    CheckEquals('Hello World!', Json.Path['First[0].Second.Third'].S['Value']);
+    Check(Json.Path['First[0].Second.Third.Value'].Typ = jdtString);
+    CheckEquals('Hello World!', Json.Path['First[0].Second.Third.Value']);
+
+    Json.FromJSON('{"menu": { "header": "SVG Viewer", "items": [ {"id": "Open"}, {"id": "OpenNew", "label": "Open New"}, null, {"id": "Help"}, {"id": "About", "label": "About Adobe CVG Viewer..."} ] }}');
+    CheckEquals('Help', Json.Path['menu.items[3].id']);
+
     FJson := Json;
     CheckException(TestPathError1, EJsonCastException);
     CheckException(TestPathError2, EJsonCastException);
@@ -2195,11 +2533,6 @@ begin
 end;
 
 procedure TestTJsonObject.TestEnumerator;
-const
-  //TODO DRY: extract DataTypeNames from TJsonDataValue.TypeCastError
-  DataTypeNames: array[TJsonDataType] of string = (
-    'null', 'String', 'Integer', 'Long', 'Float', 'Bool', 'Array', 'Object'
-  );
 var
   Obj: TJsonObject;
   Pair: TJsonNameValuePair;
@@ -2211,8 +2544,14 @@ begin
     for Typ in [Low(TJsonDataType)..High(TJsonDataType)] do
       FoundTypes[Typ] := False;
 
+    FoundTypes[jdtDateTime] := True;
+
     Obj.FromJSON('{ "Int": 42, "Object": { "Key": "Value" }, "Bool": true, "Null": null, ' +
-                   '"Long": 1234567890123456789, "Float": 1.12, "String": "Hello world!", "Array": [ 1, 2, 3 ] }');
+                   '"Long": 1234567890123456789, "ULong": 12345678901234567890, "Float": 1.12, ' +
+                   '"String": "Hello world!", "Array": [ 1, 2, 3 ] }');
+
+    // did this here because right now we can't auto parse datetime values
+    Obj.D['DateTime'] := TJsonBaseObject.JSONToDateTime('2014-12-31T23:59:59.999Z');
 
     for Pair in Obj do
     begin
@@ -2241,10 +2580,22 @@ begin
             CheckEquals(1234567890123456789, Pair.Value, 'Long value');
           end;
 
+        jdtULong:
+          begin
+            CheckEquals('ULong', Pair.Name, 'ULong name');
+            CheckEquals(12345678901234567890, Pair.Value.ULongValue, 'ULong value');
+          end;
+
         jdtFloat:
           begin
             CheckEquals('Float', Pair.Name, 'Float name');
             CheckEquals(1.12, Pair.Value, 0.001, 'Float value');
+          end;
+
+        jdtDateTime:
+          begin
+            CheckEquals('DateTime', Pair.Name, 'DateTime name');
+            CheckEquals(TJsonBaseObject.JSONToDateTime('2014-12-31T23:59:59.999Z'), Pair.Value, 0.001, 'DateTime value');
           end;
 
         jdtBool:
@@ -2268,7 +2619,7 @@ begin
     end;
 
     for Typ in [Low(TJsonDataType)..High(TJsonDataType)] do
-      CheckTrue(FoundTypes[Typ], DataTypeNames[Typ]);
+      CheckTrue(FoundTypes[Typ], TJsonBaseObject.DataTypeNames[Typ]);
   finally
     Obj.Free;
   end;
